@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+option go_package = "./proto/";
+
+message Request{
+     string id = 1;
+	oneof cmd{
+	  Ping Ping = 2;
+      Isync Isync = 3;
+	  Fsync Fsync = 4;
+   	  Rsync Rsync = 5;
+	  Bye Bye = 6;
+    }
+}
+
+message Ping{
+}
+
+
+message Isync{
+  string id = 1;
+}
+
+message Response{
+	string id = 1;
+	oneof cmd{
+		Pong Pong = 2;
+		Redirect Redirect= 3;
+		Fsync Fsync = 4;
+	}
+}
+
+message Pong{
+}
+
+message Redirect{
+	string id = 1;
+	string addr = 2;
+}
+
+message Fsync{
+	string id = 1;
+	string addr = 2;
+}
+
+message Rsync{
+	string id = 1;
+}
+
+message Bye{
+}
