@@ -84,7 +84,7 @@ func (c *Client) Connect(ctx context.Context, targetId string) (udpConn *net.UDP
 		var remoteAddr string
 		remoteAddr, err = connect()
 		if err == nil {
-			return dial(netip.MustParseAddrPort(svrConn.LocalAddr().String()), remoteAddr)
+			return dial(svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), remoteAddr)
 		}
 	}
 
@@ -167,7 +167,7 @@ func (c *Client) Listen(ctx context.Context) (net.PacketConn, error) {
 					},
 				}
 
-				if conn, err := dial(netip.MustParseAddrPort(svrConn.LocalAddr().String()), dstAddr); err == nil {
+				if conn, err := dial(svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), dstAddr); err == nil {
 					c.writeReq(conn, rsync)
 					conn.Close()
 				} else {
