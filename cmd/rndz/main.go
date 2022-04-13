@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/netip"
 	"os"
@@ -19,6 +20,9 @@ func main() {
 	app := &cli.App{
 		Usage: "a simple rendezvous protocol implementation to help NAT traversal or hole punching",
 		Name:  "rndz-go",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "verbose", Aliases: []string{"debug"}},
+		},
 		Commands: []*cli.Command{
 			&cli.Command{
 				Name: "client",
@@ -44,11 +48,20 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "listen-addr",
-						Value: "0.0.0.0:8888",
+						Value: ":8888",
 					},
 				},
 				Action: runServer,
 			},
+		},
+		Before: func(c *cli.Context) error {
+			if c.Bool("verbose") {
+				log.SetOutput(os.Stdout)
+			} else {
+				log.SetOutput(io.Discard)
+			}
+
+			return nil
 		},
 	}
 
