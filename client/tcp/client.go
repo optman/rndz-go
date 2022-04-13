@@ -26,7 +26,7 @@ type Client struct {
 	closeOnce  sync.Once
 }
 
-func NewClient(rndzServer, id string, localAddr netip.AddrPort) *Client {
+func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	return &Client{
 		rndzServer: rndzServer,
 		id:         id,
@@ -39,6 +39,7 @@ func (c *Client) Connect(ctx context.Context, targetId string) (net.Conn, error)
 	if err != nil {
 		return nil, err
 	}
+	defer svrConn.Close()
 
 	isync := &pb.Request_Isync{
 		Isync: &pb.Isync{

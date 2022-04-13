@@ -24,7 +24,7 @@ type Client struct {
 	closeOnce  sync.Once
 }
 
-func NewClient(rndzServer, id string, localAddr netip.AddrPort) *Client {
+func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	return &Client{
 		rndzServer: rndzServer,
 		id:         id,
@@ -38,6 +38,14 @@ func (c *Client) Connect(ctx context.Context, targetId string) (udpConn *net.UDP
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		bye := &pb.Request_Bye{
+			Bye: &pb.Bye{},
+		}
+		c.writeReq(svrConn, bye)
+
+		svrConn.Close()
+	}()
 
 	connect := func() (remoteAddr string, err error) {
 

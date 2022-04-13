@@ -8,17 +8,27 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	client "github.com/optman/rndz-go/client/tcp"
+	server "github.com/optman/rndz-go/server/tcp"
 )
 
 func TestTCPClient(t *testing.T) {
-	rndzServer := "localhost:8888"
+	rndzServer := "127.0.0.1:8888"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go server.New(rndzServer).Run(ctx)
 
 	var wg sync.WaitGroup
+
+	ready := make(chan any)
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c1 := NewClient(rndzServer, "c1", netip.AddrPort{})
+		c1 := client.New(rndzServer, "c1", netip.AddrPort{})
 		defer c1.Close()
 		l, err := c1.Listen(context.Background())
 		if err != nil {
@@ -26,6 +36,8 @@ func TestTCPClient(t *testing.T) {
 		}
 
 		defer l.Close()
+
+		close(ready)
 
 		conn, err := l.Accept()
 		if err != nil {
@@ -45,8 +57,10 @@ func TestTCPClient(t *testing.T) {
 
 	}()
 
+	<-ready
+
 	{
-		c2 := NewClient(rndzServer, "c2", netip.AddrPort{})
+		c2 := client.New(rndzServer, "c2", netip.AddrPort{})
 		defer c2.Close()
 		var conn net.Conn
 		var err error

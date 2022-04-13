@@ -9,6 +9,8 @@ import (
 
 	"github.com/optman/rndz-go/client/tcp"
 	"github.com/optman/rndz-go/client/udp"
+	TcpServer "github.com/optman/rndz-go/server/tcp"
+	UdpServer "github.com/optman/rndz-go/server/udp"
 
 	"github.com/urfave/cli/v2"
 )
@@ -36,6 +38,17 @@ func main() {
 				},
 				Action: runClient,
 			},
+
+			&cli.Command{
+				Name: "server",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "listen-addr",
+						Value: "0.0.0.0:8888",
+					},
+				},
+				Action: runServer,
+			},
 		},
 	}
 
@@ -46,13 +59,23 @@ func main() {
 	}
 }
 
+func runServer(c *cli.Context) error {
+	listenAddr := c.String("listen-addr")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go TcpServer.New(listenAddr).Run(ctx)
+
+	return UdpServer.New(listenAddr).Run(ctx)
+}
+
 func runClient(c *cli.Context) error {
 	rndzServer := c.String("server-addr")
 	remotePeer := c.String("remote-peer")
 	id := c.String("id")
 
 	if c.Bool("tcp") {
-		c := tcp.NewClient(rndzServer, id, netip.AddrPort{})
+		c := tcp.New(rndzServer, id, netip.AddrPort{})
 		defer c.Close()
 		if remotePeer == "" {
 			return tcpServer(c)
@@ -61,7 +84,7 @@ func runClient(c *cli.Context) error {
 		}
 
 	} else {
-		c := udp.NewClient(rndzServer, id, netip.AddrPort{})
+		c := udp.New(rndzServer, id, netip.AddrPort{})
 		defer c.Close()
 		if remotePeer == "" {
 			return udpServer(c)
