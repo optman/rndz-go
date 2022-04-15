@@ -21,9 +21,9 @@ type Client struct {
 	rndzServer string
 	id         string
 	localAddr  netip.AddrPort
-	svrConn    net.Conn
 	listener   net.Listener
 	closeOnce  sync.Once
+	closeChan  chan any
 }
 
 func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
@@ -31,6 +31,7 @@ func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 		rndzServer: rndzServer,
 		id:         id,
 		localAddr:  localAddr,
+		closeChan:  make(chan any),
 	}
 }
 
@@ -96,7 +97,57 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 		return nil, err
 	}
 
-	svrConn, err := dial(ctx, listener.Addr(), c.rndzServer, time.Duration(0))
+	{
+		localAddr := listener.Addr()
+		stopChan, err := c.connectServer(ctx, localAddr)
+		if err != nil {
+			return nil, err
+		}
+
+		go func() {
+			var wait <-chan time.Time
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-c.closeChan:
+					return
+				case <-stopChan:
+					log.Printf("connection with rndz server is broken, try to reconnect.")
+				case <-wait:
+				}
+
+				if stopChan, err = c.connectServer(ctx, localAddr); err != nil {
+					log.Printf("connect rndz server fail, retry later. %s", err)
+					wait = time.After(120 * time.Second)
+				} else {
+					log.Println("connect rndz server success")
+					wait = nil
+				}
+			}
+		}()
+	}
+
+	c.listener = listener
+
+	return listener, nil
+}
+
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		close(c.closeChan)
+
+		if c.listener != nil {
+			c.listener.Close()
+		}
+	})
+}
+
+func (c *Client) connectServer(ctx context.Context, addr net.Addr) (<-chan any, error) {
+
+	stopChan := make(chan any)
+
+	svrConn, err := dial(ctx, addr, c.rndzServer, time.Duration(0))
 	if err != nil {
 		return nil, err
 	}
@@ -112,12 +163,12 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 
 	sendPing()
 
-	cancel := func() {
-		c.Close()
-	}
+	var wg sync.WaitGroup
 
+	wg.Add(1)
 	go func() {
-		defer cancel()
+		defer wg.Done()
+		defer svrConn.Close()
 
 		dur := 10 * time.Second
 
@@ -127,6 +178,8 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 		for {
 
 			select {
+			case <-c.closeChan:
+				return
 			case <-ctx.Done():
 				return
 			case <-t.C:
@@ -145,11 +198,15 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 		}
 	}()
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer close(cmdChannel)
+
 		for {
 			resp, err := readResp(svrConn)
 			if err != nil {
+				svrConn.Close()
 				return
 			}
 
@@ -183,22 +240,12 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 
 	}()
 
-	c.svrConn = svrConn
-	c.listener = listener
+	go func() {
+		wg.Wait()
+		close(stopChan)
+	}()
 
-	return listener, nil
-}
-
-func (c *Client) Close() {
-	c.closeOnce.Do(func() {
-		if c.svrConn != nil {
-			c.svrConn.Close()
-		}
-
-		if c.listener != nil {
-			c.listener.Close()
-		}
-	})
+	return stopChan, nil
 }
 
 func dial(ctx context.Context, localAddr net.Addr, remoteAddr string, timeout time.Duration) (net.Conn, error) {
