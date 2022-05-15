@@ -1,3 +1,4 @@
+// Udp socket builder
 package udp
 
 import (
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Udp socket builder
 type Client struct {
 	rndzServer string
 	id         string
@@ -24,6 +26,8 @@ type Client struct {
 	closeOnce  sync.Once
 }
 
+//set rendezvous server, peer identity, local bind address.
+//if no local address set, choose according server address type(ipv4 or ipv6).
 func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	return &Client{
 		rndzServer: rndzServer,
@@ -32,6 +36,8 @@ func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	}
 }
 
+//send rendezvous server a request to connect target peer.
+//dial to target peer, return a connected udp
 func (c *Client) Connect(ctx context.Context, targetId string) (udpConn *net.UDPConn, err error) {
 
 	svrConn, err := dial(c.localAddr, c.rndzServer)
@@ -99,6 +105,10 @@ func (c *Client) Connect(ctx context.Context, targetId string) (udpConn *net.UDP
 	return
 }
 
+//keep ping rendezvous server, wait for peer connection request.
+//
+//when received `Fsync` request from server, attempt to send remote peer a packet
+//this will open the firwall and nat rule for the peer.
 func (c *Client) Listen(ctx context.Context) (net.PacketConn, error) {
 
 	localAddr := c.localAddr
@@ -210,6 +220,7 @@ func (c *Client) Listen(ctx context.Context) (net.PacketConn, error) {
 	return listener, nil
 }
 
+//stop internal goroutine
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		if c.svrConn != nil {

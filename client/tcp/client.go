@@ -1,3 +1,7 @@
+//Tcp connection builder
+//
+//Bind to a port, connect to a rendezvous server. Wait for peer connection request or initiate a
+//peer connection request.
 package tcp
 
 import (
@@ -17,6 +21,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Tcp connection builder
+//
 type Client struct {
 	rndzServer string
 	id         string
@@ -26,6 +32,8 @@ type Client struct {
 	closeChan  chan any
 }
 
+// set rendezvous server, peer identity, local bind address.
+// if no local address set, choose according server address type(ipv4 or ipv6).
 func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	return &Client{
 		rndzServer: rndzServer,
@@ -35,6 +43,11 @@ func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	}
 }
 
+// connect to rendezvous server and request a connection to target node.
+//
+// it will return a net.Conn with remote peer.
+//
+// the connection with rendezvous server will be drop after return.
 func (c *Client) Connect(ctx context.Context, targetId string) (net.Conn, error) {
 	svrConn, err := dial(ctx, net.TCPAddrFromAddrPort(c.localAddr), c.rndzServer, time.Duration(0))
 	if err != nil {
@@ -72,6 +85,12 @@ func (c *Client) Connect(ctx context.Context, targetId string) (net.Conn, error)
 	return dial(ctx, svrConn.LocalAddr(), remoteAddr, time.Duration(0))
 }
 
+// put socket in listen mode, create connection with rendezvous server, wait for peer
+// connection request. if connection with server broken it will auto reconnect.
+//
+// when received `Fsync` request from server, attempt to connect remote peer with a very short timeout,
+// this will open the firwall and nat rule for the peer connection that will follow immediately.
+// When the peer connection finally come, the listening socket then accept it as normal.
 func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 
 	localAddr := c.localAddr
@@ -133,6 +152,7 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 	return listener, nil
 }
 
+// stop internal goroutine
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.closeChan)
