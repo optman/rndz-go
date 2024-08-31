@@ -110,55 +110,54 @@ func runClient(c *cli.Context) error {
 func tcpServer(c *tcp.Client) error {
 	l, err := c.Listen(context.Background())
 	if err != nil {
-		return err
+		return fmt.Errorf("error starting TCP server: %w", err)
 	}
 	defer l.Close()
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			return err
+			return fmt.Errorf("error accepting TCP connection: %w", err)
 		}
 
 		go func() {
 			defer conn.Close()
+
 			buf := make([]byte, 5)
 			n, err := conn.Read(buf)
 			if err != nil {
-				log.Println(err)
+				log.Println("error reading from TCP connection:", err)
 				return
 			}
 
 			log.Printf("read %d bytes", n)
 
 			if _, err := conn.Write(buf[:n]); err != nil {
-				log.Println(err)
+				log.Println("error writing to TCP connection:", err)
 				return
 			}
-
 		}()
-
 	}
 }
 
 func tcpClient(c *tcp.Client, remotePeer string) error {
-
 	conn, err := c.Connect(context.Background(), remotePeer)
 	if err != nil {
-		return err
+		return fmt.Errorf("error connecting to TCP remote peer: %w", err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.Write([]byte("hello")); err != nil {
-		return err
+		return fmt.Errorf("error writing to remote TCP peer: %w", err)
 	}
 
 	buf := make([]byte, 5)
 	n, err := conn.Read(buf)
 	if err != nil {
-		return err
+		return fmt.Errorf("error reading from remote TCP peer: %w", err)
 	}
 
-	log.Printf("read %d bytes", n)
+	log.Printf("read %d bytes from remote peer", n)
 
 	return nil
 }
@@ -166,7 +165,7 @@ func tcpClient(c *tcp.Client, remotePeer string) error {
 func udpServer(c *udp.Client) error {
 	l, err := c.Listen(context.Background())
 	if err != nil {
-		return err
+		return fmt.Errorf("error starting UDP server: %w", err)
 	}
 	defer l.Close()
 
@@ -174,33 +173,34 @@ func udpServer(c *udp.Client) error {
 	for {
 		n, addr, err := l.ReadFrom(buf)
 		if err != nil {
-			return err
+			return fmt.Errorf("error reading from UDP connection: %w", err)
 		}
 
 		log.Printf("read %d bytes from %s", n, addr)
 
-		l.WriteTo(buf[:n], addr)
+		if _, err := l.WriteTo(buf[:n], addr); err != nil {
+			log.Println("error writing to UDP connection:", err)
+		}
 	}
 }
 
 func udpClient(c *udp.Client, remotePeer string) error {
-
 	conn, err := c.Connect(context.Background(), remotePeer)
 	if err != nil {
-		return err
+		return fmt.Errorf("error connecting to UDP remote peer: %w", err)
 	}
 	defer conn.Close()
 
-	buf := make([]byte, 1500)
 	if _, err = conn.Write([]byte("hello")); err != nil {
-		return err
+		return fmt.Errorf("error writing to remote UDP peer: %w", err)
 	}
 
+	buf := make([]byte, 1500)
 	if n, err := conn.Read(buf); err == nil {
 		log.Printf("read %d bytes from %s", n, conn.RemoteAddr())
 	} else {
-		return err
+		return fmt.Errorf("error reading from remote UDP peer: %w", err)
 	}
 
-	return err
+	return nil
 }

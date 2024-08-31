@@ -1,281 +1,232 @@
-// Udp socket builder
 package udp
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"net"
-	"net/netip"
-	"sync"
-	"time"
+    "context"
+    "fmt"
+    "log"
+    "net"
+    "net/netip"
+    "sync"
+    "time"
 
-	"github.com/optman/rndz-go/ctl"
-	pb "github.com/optman/rndz-go/proto"
-
-	"google.golang.org/protobuf/proto"
+    "github.com/optman/rndz-go/ctl"
+    pb "github.com/optman/rndz-go/proto"
+    "google.golang.org/protobuf/proto"
 )
 
-// Udp socket builder
+const (
+    // connection timeout for dialing to the server
+    connectionTimeout = 10 * time.Second
+    // reconciliation retry limit
+    retryLimit = 3
+    // ping interval duration
+    pingInterval = 10 * time.Second
+)
+
 type Client struct {
-	rndzServer string
-	id         string
-	localAddr  netip.AddrPort
-	listener   net.PacketConn
-	svrConn    *net.UDPConn
-	closeOnce  sync.Once
+    rndzServer string
+    id         string
+    localAddr  netip.AddrPort
+    listener   net.PacketConn
+    svrConn    *net.UDPConn
+    closeOnce  sync.Once
 }
 
-//set rendezvous server, peer identity, local bind address.
-//if no local address set, choose according server address type(ipv4 or ipv6).
+// New initializes a new Client with the provided rendezvous server, ID, and local address.
+// If no local address is set, it chooses one based on the server address type (IPv4 or IPv6).
 func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
-	return &Client{
-		rndzServer: rndzServer,
-		id:         id,
-		localAddr:  localAddr,
-	}
+    return &Client{
+        rndzServer: rndzServer,
+        id:         id,
+        localAddr:  localAddr,
+    }
 }
 
-//send rendezvous server a request to connect target peer.
-//dial to target peer, return a connected udp
-func (c *Client) Connect(ctx context.Context, targetId string) (udpConn *net.UDPConn, err error) {
+// Connect sends a connection request to the rendezvous server to connect to the target peer.
+// It returns a connected UDP connection.
+func (c *Client) Connect(ctx context.Context, targetId string) (*net.UDPConn, error) {
+    svrConn, err := dial(c.localAddr, c.rndzServer)
+    if err != nil {
+        return nil, fmt.Errorf("failed to dial server: %w", err)
+    }
+    defer func() {
+        bye := &pb.Request_Bye{Bye: &pb.Bye{}}
+        c.writeReq(svrConn, bye)
+        svrConn.Close()
+    }()
 
-	svrConn, err := dial(c.localAddr, c.rndzServer)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		bye := &pb.Request_Bye{
-			Bye: &pb.Bye{},
-		}
-		c.writeReq(svrConn, bye)
-
-		svrConn.Close()
-	}()
-
-	connect := func() (remoteAddr string, err error) {
-
-		isync := &pb.Request_Isync{
-			Isync: &pb.Isync{
-				Id: targetId,
-			},
-		}
-
-		if err = c.writeReq(svrConn, isync); err != nil {
-			return
-		}
-
-		svrConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		var resp pb.Response
-		resp, err = readResp(svrConn)
-		if err != nil {
-			return
-		}
-		if resp.GetId() != c.id {
-			err = fmt.Errorf("wrong response?")
-			return
-		}
-
-		rdr := resp.GetRedirect()
-		if rdr == nil {
-			err = fmt.Errorf("invalid response")
-			return
-
-		}
-
-		remoteAddr = rdr.GetAddr()
-		if remoteAddr == "" {
-			err = fmt.Errorf("target id not found")
-			return
-		}
-
-		log.Printf("remote addr %s", remoteAddr)
-
-		return
-	}
-
-	for i := 0; i < 3; i++ {
-		var remoteAddr string
-		remoteAddr, err = connect()
-		if err == nil {
-			return dial(svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), remoteAddr)
-		}
-	}
-
-	return
+    for i := 0; i < retryLimit; i++ {
+        remoteAddr, err := c.connectToTarget(svrConn, targetId)
+        if err == nil {
+            return dial(svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), remoteAddr)
+        }
+        log.Printf("connect attempt %d failed: %v", i+1, err)
+    }
+    return nil, fmt.Errorf("failed to connect after %d attempts", retryLimit)
 }
 
-//keep ping rendezvous server, wait for peer connection request.
-//
-//when received `Fsync` request from server, attempt to send remote peer a packet
-//this will open the firwall and nat rule for the peer.
+func (c *Client) connectToTarget(svrConn *net.UDPConn, targetId string) (string, error) {
+    isync := &pb.Request_Isync{Isync: &pb.Isync{Id: targetId}}
+
+    if err := c.writeReq(svrConn, isync); err != nil {
+        return "", fmt.Errorf("failed to write isync request: %w", err)
+    }
+
+    svrConn.SetReadDeadline(time.Now().Add(connectionTimeout))
+    resp, err := readResp(svrConn)
+    if err != nil {
+        return "", fmt.Errorf("failed to read response: %w", err)
+    }
+    if resp.GetId() != c.id {
+        return "", fmt.Errorf("unexpected response ID: %s", resp.GetId())
+    }
+
+    rdr := resp.GetRedirect()
+    if rdr == nil || rdr.GetAddr() == "" {
+        return "", fmt.Errorf("redirect address not found for target ID: %s", targetId)
+    }
+    log.Printf("remote addr %s", rdr.GetAddr())
+    return rdr.GetAddr(), nil
+}
+
+// Listen starts listening for peer connection requests while pinging the rendezvous server.
 func (c *Client) Listen(ctx context.Context) (net.PacketConn, error) {
+    if !c.localAddr.IsValid() {
+        serverAddr, err := net.ResolveUDPAddr("udp", c.rndzServer)
+        if err != nil {
+            return nil, fmt.Errorf("failed to resolve server address: %w", err)
+        }
+        if len(serverAddr.IP) == net.IPv4len {
+            c.localAddr = netip.MustParseAddrPort("0.0.0.0:0")
+        } else {
+            c.localAddr = netip.MustParseAddrPort("[::]:0")
+        }
+    }
 
-	localAddr := c.localAddr
-	if !localAddr.IsValid() {
-		serverAddr, err := net.ResolveUDPAddr("udp", c.rndzServer)
-		if err != nil {
-			return nil, err
-		}
+    svrConn, err := dial(c.localAddr, c.rndzServer)
+    if err != nil {
+        return nil, fmt.Errorf("failed to dial server: %w", err)
+    }
+    c.svrConn = svrConn
 
-		if len(serverAddr.IP) == net.IPv4len {
-			localAddr = netip.MustParseAddrPort("0.0.0.0:0")
-		} else {
-			localAddr = netip.MustParseAddrPort("[::]:0")
-		}
-	}
+    go c.pingServer(ctx)
+    go c.handleServerResponses()
 
-	svrConn, err := dial(localAddr, c.rndzServer)
-	if err != nil {
-		return nil, err
-	}
-
-	cancel := func() {
-		c.Close()
-	}
-
-	go func() {
-
-		defer cancel()
-
-		ping := &pb.Request_Ping{
-			Ping: &pb.Ping{},
-		}
-
-		c.writeReq(svrConn, ping)
-
-		dur := 10 * time.Second
-		t := time.NewTimer(dur)
-		defer t.Stop()
-
-		for {
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				c.writeReq(svrConn, ping)
-			}
-
-			t.Reset(dur)
-		}
-	}()
-
-	go func() {
-		defer cancel()
-
-		for {
-			resp, err := readResp(svrConn)
-			if err != nil {
-				return
-			}
-
-			switch resp.Cmd.(type) {
-			case *pb.Response_Pong:
-			case *pb.Response_Fsync:
-				fsync, _ := resp.Cmd.(*pb.Response_Fsync)
-
-				dstId := fsync.Fsync.GetId()
-				dstAddr := fsync.Fsync.GetAddr()
-				log.Printf("fsync %s %s", dstId, dstAddr)
-
-				rsync := &pb.Request_Rsync{
-					Rsync: &pb.Rsync{
-						Id: dstId,
-					},
-				}
-
-				if conn, err := dial(svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), dstAddr); err == nil {
-					c.writeReq(conn, rsync)
-					conn.Close()
-				} else {
-					log.Println(err)
-				}
-
-				c.writeReq(svrConn, rsync)
-
-			case *pb.Response_Redirect:
-				rdr, _ := resp.Cmd.(*pb.Response_Redirect)
-				log.Printf("Redirect?  %s %s", rdr.Redirect.GetId(), rdr.Redirect.GetAddr())
-
-			default:
-				log.Println("ignore unknown response cmd")
-			}
-
-		}
-	}()
-
-	cfg := net.ListenConfig{
-		Control: ctl.ControlUDP,
-	}
-
-	listener, err := cfg.ListenPacket(ctx, "udp", svrConn.LocalAddr().String())
-	if err != nil {
-		return nil, err
-	}
-
-	c.svrConn = svrConn
-	c.listener = listener
-
-	return listener, nil
+    cfg := net.ListenConfig{Control: ctl.ControlUDP}
+    listener, err := cfg.ListenPacket(ctx, "udp", svrConn.LocalAddr().String())
+    if err != nil {
+        return nil, fmt.Errorf("failed to start listener: %w", err)
+    }
+    c.listener = listener
+    return listener, nil
 }
 
-//stop internal goroutine
-func (c *Client) Close() {
-	c.closeOnce.Do(func() {
-		if c.svrConn != nil {
-			bye := &pb.Request_Bye{
-				Bye: &pb.Bye{},
-			}
-			c.writeReq(c.svrConn, bye)
-			c.svrConn.Close()
-		}
+func (c *Client) pingServer(ctx context.Context) {
+    defer c.Close()
+    ping := &pb.Request_Ping{Ping: &pb.Ping{}}
 
-		if c.listener != nil {
-			c.listener.Close()
-		}
-	})
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-time.After(pingInterval):
+            if err := c.writeReq(c.svrConn, ping); err != nil {
+                log.Printf("failed to send ping: %v", err)
+            }
+        }
+    }
 }
 
-func dial(srcAddr netip.AddrPort, dstAddr string) (udpConn *net.UDPConn, err error) {
+func (c *Client) handleServerResponses() {
+    defer c.Close()
 
-	d := net.Dialer{
-		Control:   ctl.ControlUDP,
-		LocalAddr: net.UDPAddrFromAddrPort(srcAddr),
-	}
+    for {
+        resp, err := readResp(c.svrConn)
+        if err != nil {
+            log.Printf("error reading server response: %v", err)
+            return
+        }
 
-	var conn net.Conn
-	conn, err = d.Dial("udp", dstAddr)
-	if err != nil {
-		return
-	}
+        switch cmd := resp.Cmd.(type) {
+        case *pb.Response_Pong:
+            // Handle pong response (no action required)
+        case *pb.Response_Fsync:
+            c.handleFsync(cmd.Fsync)
+        case *pb.Response_Redirect:
+            log.Printf("Redirect? %s %s", cmd.Redirect.GetId(), cmd.Redirect.GetAddr())
+        default:
+            log.Printf("ignored unknown response command: %T", cmd)
+        }
+    }
+}
 
-	return conn.(*net.UDPConn), nil
+func (c *Client) handleFsync(fsync *pb.Fsync) {
+    dstId := fsync.GetId()
+    dstAddr := fsync.GetAddr()
+    log.Printf("received fsync %s %s", dstId, dstAddr)
+
+    rsync := &pb.Request_Rsync{Rsync: &pb.Rsync{Id: dstId}}
+    if conn, err := dial(c.svrConn.LocalAddr().(*net.UDPAddr).AddrPort(), dstAddr); err == nil {
+        c.writeReq(conn, rsync)
+        conn.Close()
+    } else {
+        log.Printf("failed to dial fsync address %s: %v", dstAddr, err)
+    }
+    c.writeReq(c.svrConn, rsync)
+}
+
+func dial(srcAddr netip.AddrPort, dstAddr string) (*net.UDPConn, error) {
+    d := net.Dialer{
+        Control:   ctl.ControlUDP,
+        LocalAddr: net.UDPAddrFromAddrPort(srcAddr),
+    }
+
+    conn, err := d.Dial("udp", dstAddr)
+    if err != nil {
+        return nil, fmt.Errorf("failed to dial destination: %w", err)
+    }
+    return conn.(*net.UDPConn), nil
 }
 
 func (c *Client) writeReq(conn *net.UDPConn, cmd pb.IsRequestCmd) error {
-	req := &pb.Request{
-		Id:  c.id,
-		Cmd: cmd,
-	}
-	buf, _ := proto.Marshal(req)
-
-	_, err := conn.Write(buf)
-	return err
+    req := &pb.Request{Id: c.id, Cmd: cmd}
+    buf, err := proto.Marshal(req)
+    if err != nil {
+        return fmt.Errorf("failed to marshal request: %w", err)
+    }
+    if _, err = conn.Write(buf); err != nil {
+        return fmt.Errorf("failed to send request: %w", err)
+    }
+    return nil
 }
 
-func readResp(conn *net.UDPConn) (resp pb.Response, err error) {
+func readResp(conn *net.UDPConn) (pb.Response, error) {
+    buf := make([]byte, 1500)
+    n, err := conn.Read(buf)
+    if err != nil {
+        return pb.Response{}, fmt.Errorf("failed to read response: %w", err)
+    }
 
-	buf := make([]byte, 1500)
-	var n int
-	n, err = conn.Read(buf)
-	if err != nil {
-		return
-	}
+    var resp pb.Response
+    if err = proto.Unmarshal(buf[:n], &resp); err != nil {
+        return pb.Response{}, fmt.Errorf("failed to unmarshal response: %w", err)
+    }
+    return resp, nil
+}
 
-	if err = proto.Unmarshal(buf[:n], &resp); err != nil {
-		return
-	}
+// Close stops internal goroutines and closes connections.
+func (c *Client) Close() {
+    c.closeOnce.Do(func() {
+        if c.svrConn != nil {
+            bye := &pb.Request_Bye{Bye: &pb.Bye{}}
+            if err := c.writeReq(c.svrConn, bye); err != nil {
+                log.Printf("failed to send bye request: %v", err)
+            }
+            c.svrConn.Close()
+        }
 
-	return
+        if c.listener != nil {
+            c.listener.Close()
+        }
+    })
 }

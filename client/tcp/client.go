@@ -22,7 +22,7 @@ import (
 )
 
 // Tcp connection builder
-//
+
 type Client struct {
 	rndzServer string
 	id         string
@@ -32,8 +32,8 @@ type Client struct {
 	closeChan  chan any
 }
 
-// set rendezvous server, peer identity, local bind address.
-// if no local address set, choose according server address type(ipv4 or ipv6).
+// New creates a new Client instance and sets the rendezvous server, peer identity, and local bind address.
+// If no local address is set, it chooses according to the server address type (IPv4 or IPv6).
 func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	return &Client{
 		rndzServer: rndzServer,
@@ -43,11 +43,9 @@ func New(rndzServer, id string, localAddr netip.AddrPort) *Client {
 	}
 }
 
-// connect to rendezvous server and request a connection to target node.
-//
-// it will return a net.Conn with remote peer.
-//
-// the connection with rendezvous server will be drop after return.
+// Connect to the rendezvous server and request a connection to the target node.
+// Returns a net.Conn with the remote peer.
+// The connection with the rendezvous server will be dropped after return.
 func (c *Client) Connect(ctx context.Context, targetId string) (net.Conn, error) {
 	svrConn, err := dial(ctx, net.TCPAddrFromAddrPort(c.localAddr), c.rndzServer, time.Duration(0))
 	if err != nil {
@@ -85,15 +83,14 @@ func (c *Client) Connect(ctx context.Context, targetId string) (net.Conn, error)
 	return dial(ctx, svrConn.LocalAddr(), remoteAddr, time.Duration(0))
 }
 
-// put socket in listen mode, create connection with rendezvous server, wait for peer
-// connection request. if connection with server broken it will auto reconnect.
-//
-// when received `Fsync` request from server, attempt to connect remote peer with a very short timeout,
-// this will open the firwall and nat rule for the peer connection that will follow immediately.
-// When the peer connection finally come, the listening socket then accept it as normal.
+// Listen puts the socket in listen mode, creates a connection with the rendezvous server, and waits for peer
+// connection requests. If the connection with the server is broken, it will auto-reconnect.
+// When receiving a `Fsync` request from the server, it attempts to connect to the remote peer with a very short timeout,
+// opening the firewall and NAT rule for the immediate peer connection. When the peer connection finally arrives,
+// the listening socket accepts it as normal.
 func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
-
 	localAddr := c.localAddr
+
 	if !localAddr.IsValid() {
 		serverAddr, err := net.ResolveTCPAddr("tcp", c.rndzServer)
 		if err != nil {
@@ -152,7 +149,7 @@ func (c *Client) Listen(ctx context.Context) (net.Listener, error) {
 	return listener, nil
 }
 
-// stop internal goroutine
+// Close stops the internal goroutine and closes the listener if it exists.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.closeChan)
@@ -163,8 +160,8 @@ func (c *Client) Close() {
 	})
 }
 
+// connectServer establishes a connection to the rendezvous server and returns a channel that signals if the connection is lost.
 func (c *Client) connectServer(ctx context.Context, addr net.Addr) (<-chan any, error) {
-
 	stopChan := make(chan any)
 
 	svrConn, err := dial(ctx, addr, c.rndzServer, time.Duration(0))
@@ -196,7 +193,6 @@ func (c *Client) connectServer(ctx context.Context, addr net.Addr) (<-chan any, 
 		defer t.Stop()
 
 		for {
-
 			select {
 			case <-c.closeChan:
 				return
@@ -257,7 +253,6 @@ func (c *Client) connectServer(ctx context.Context, addr net.Addr) (<-chan any, 
 				log.Println("ignore unknown response cmd")
 			}
 		}
-
 	}()
 
 	go func() {
@@ -268,6 +263,7 @@ func (c *Client) connectServer(ctx context.Context, addr net.Addr) (<-chan any, 
 	return stopChan, nil
 }
 
+// dial creates a TCP connection to the remote address using the specified local address and timeout.
 func dial(ctx context.Context, localAddr net.Addr, remoteAddr string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{
 		Control:   ctl.ControlTCP,
@@ -278,6 +274,7 @@ func dial(ctx context.Context, localAddr net.Addr, remoteAddr string, timeout ti
 	return d.DialContext(ctx, "tcp", remoteAddr)
 }
 
+// writeReq encodes and writes a request to the given io.Writer.
 func (c *Client) writeReq(w io.Writer, cmd pb.IsRequestCmd) (err error) {
 	req := &pb.Request{
 		Id:  c.id,
@@ -292,6 +289,7 @@ func (c *Client) writeReq(w io.Writer, cmd pb.IsRequestCmd) (err error) {
 	return
 }
 
+// readResp reads and decodes a response from the given io.Reader.
 func readResp(r io.Reader) (resp pb.Response, err error) {
 	var n uint16
 	if err = binary.Read(r, binary.BigEndian, &n); err != nil {

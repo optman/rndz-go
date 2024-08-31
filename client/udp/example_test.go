@@ -5,7 +5,7 @@ import (
 	"net/netip"
 )
 
-func Example_client1() {
+func Example_client1(rndzServer String) {
 	c := udp.NewClient(rndzServer, "c1", netip.AddrPort{})
 	defer c.Close()
 	l, _ := c.Listen(context.Background())
@@ -17,7 +17,7 @@ func Example_client1() {
 	}
 }
 
-func Example_client2() {
+func Example_client2(rndzServer String) {
 	c := udp.NewClient(rndzServer, "c2", netip.AddrPort{})
 	defer c.Close()
 	conn, _ := c.Connect(context.Background(), "c1")
